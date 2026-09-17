@@ -9,6 +9,15 @@ For each word in data/vocab.json, asks the Gemini API for:
   - priorDifficulty: a 0.0-1.0 cold-start difficulty estimate for a
     Taiwanese high-schooler, used by logic.js's computeDifficultyBaseline
     only until real attempt data exists for a word.
+  - exampleSentence: one short example sentence at a level appropriate for a
+    Taiwanese high-schooler, using the word naturally. Shown in app.js's
+    卡片複習模式 card-flip view alongside the word's existing Chinese meaning
+    (see buildFlashcardRevealHtml) - a plain example sentence doesn't depend
+    on any one learner's own data the way the personalized-mnemonic/
+    memory-palace-story features do (see vocab-ai.js and Orbit's
+    cloudflare-worker/orbit-worker.js's /vocab-ai path), so pre-generating it
+    once here in bulk is simpler and has no runtime dependency on a live API
+    call - unlike those two, nothing here needs to change per learner.
 
 Results are written to data/ai_signals.json (a dict keyed by word), loaded
 by the app as a static asset exactly like data/vocab.json - never fetched
@@ -69,8 +78,9 @@ RESPONSE_SCHEMA = {
                     "confusedWith": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "mnemonic": {"type": "STRING"},
                     "priorDifficulty": {"type": "NUMBER"},
+                    "exampleSentence": {"type": "STRING"},
                 },
-                "required": ["word", "confusedWith", "mnemonic", "priorDifficulty"],
+                "required": ["word", "confusedWith", "mnemonic", "priorDifficulty", "exampleSentence"],
             },
         },
     },
@@ -100,7 +110,14 @@ def build_prompt(reference_rows, target_rows):
         "spelling or meaning.\n"
         "- priorDifficulty: a number from 0.0 (very easy) to 1.0 (very hard) "
         "estimating how hard this word is for a Taiwanese high-schooler to "
-        "spell and learn.\n\n"
+        "spell and learn.\n"
+        "- exampleSentence: one short, natural example sentence (under 15 "
+        "words) using the target word, at a reading level appropriate for a "
+        "Taiwanese high school student - simple vocabulary and grammar "
+        "elsewhere in the sentence, so the target word itself stands out "
+        "rather than being buried in other difficult words. The sentence "
+        "MUST contain the exact target word (any inflected form, e.g. "
+        "plural/past tense, is fine).\n\n"
         f"TARGET WORDS ({len(target_rows)} words):\n"
         f"{json.dumps(target_rows, ensure_ascii=False)}\n"
     )
@@ -162,7 +179,26 @@ def clean_item(item, vocab_by_lower):
     prior = float(prior) if isinstance(prior, (int, float)) else 0.5
     prior = max(0.0, min(1.0, prior))
 
-    return canonical, {"confusedWith": confused, "mnemonic": mnemonic, "priorDifficulty": prior}
+    example_sentence = item.get("exampleSentence")
+    example_sentence = example_sentence.strip() if isinstance(example_sentence, str) else ""
+    # Defensively re-checks the prompt's own requirement instead of trusting
+    # the model followed it (same posture as every other field here): a
+    # sentence that doesn't actually contain the word it's supposed to
+    # demonstrate is worse than no example at all - app.js's
+    # buildFlashcardRevealHtml already treats a missing/empty
+    # exampleSentence as "nothing to show", so dropping it here is enough,
+    # no separate "invalid" state needed downstream. A plain substring check
+    # (not exact word match) tolerates the model using an inflected form
+    # (plural/past tense/etc.), which the prompt explicitly allows.
+    if example_sentence and canonical.lower() not in example_sentence.lower():
+        example_sentence = ""
+
+    return canonical, {
+        "confusedWith": confused,
+        "mnemonic": mnemonic,
+        "priorDifficulty": prior,
+        "exampleSentence": example_sentence,
+    }
 
 
 async def generate_batch(batch, reference_rows, model, api_key, semaphore, loop):
@@ -208,7 +244,16 @@ async def main():
         signals = json.loads(SIGNALS_PATH.read_text(encoding="utf-8"))
 
     words = vocab[: args.limit] if args.limit else vocab
-    pending = [w for w in words if w["word"] not in signals]
+    # A word missing ONLY exampleSentence (added after confusedWith/
+    # mnemonic/priorDifficulty were already generated for the whole
+    # vocabulary - see this script's own module docstring) still counts as
+    # pending, so re-running this script after that field was added backfills
+    # it for every existing entry rather than skipping them all as "already
+    # done". The one word regenerates its other three fields too in the same
+    # call (this is one combined request/response, not four separate ones) -
+    # a fresh confusedWith/mnemonic/priorDifficulty from the same prompt is
+    # an acceptable side effect, not a regression.
+    pending = [w for w in words if w["word"] not in signals or not signals[w["word"]].get("exampleSentence")]
     if not pending:
         print(f"Nothing to do - all {len(words)} words already have signals.")
         return

@@ -37,6 +37,7 @@ const APP_SHELL = [
   "logic.js",
   "app.js",
   "sync.js",
+  "vocab-ai.js",
   "manifest.json",
   "data/vocab.json",
   "icons/icon-192.png",

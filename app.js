@@ -1875,7 +1875,83 @@ function buildDetailedWrongAnswerHtml(detail) {
 function buildFlashcardRevealHtml(detail, showWrongInfo) {
   const zhHtml = zhLines(detail.zh).map((l) => escapeHtml(l)).join("<br>");
   const wrongHtml = showWrongInfo && detail.lastWrongAnswer ? `<div class="word-card-wrong answer-diff">${buildDetailedWrongAnswerHtml(detail)}</div>` : "";
-  return `<div>${zhHtml}</div>${wrongHtml}`;
+  // Pre-generated (build-time, offline) example sentence at an appropriate
+  // reading level - see scripts/generate_ai_signals.py's own exampleSentence
+  // field and README's rationale for generating this one in bulk instead of
+  // live (unlike the personalized mnemonic/story features below, a plain
+  // example sentence doesn't depend on THIS learner's own data, so there's
+  // nothing a live per-user call would buy here). Silently omitted for a
+  // word with no signal yet (not yet generated for, or added after the last
+  // generation run) - same "missing AI signal is not an error" pattern
+  // every other AI_SIGNALS consumer in this file already follows.
+  const aiSignal = AI_SIGNALS[detail.word];
+  const exampleHtml = aiSignal && aiSignal.exampleSentence ? `<div class="flashcard-example">${escapeHtml(aiSignal.exampleSentence)}</div>` : "";
+  return `<div>${zhHtml}</div>${exampleHtml}${wrongHtml}`;
+}
+
+// Personalized, per-learner mnemonic (see vocab-ai.js) - only offered for a
+// 答錯待複習 word that actually has a recorded wrong-answer history (see
+// createEmptyWordHistory's own lastWrongAnswer), since without one there is
+// no actual mistake PATTERN for a live call to target (a word not yet
+// gotten wrong, or being browsed from 學習中/已標記, already gets the
+// generic static hint from data/ai_signals.json in the quiz's own
+// wrong-answer feedback instead - see renderAnswerFeedback's own aiSignal
+// use). Appended as real DOM (not baked into buildFlashcardRevealHtml's own
+// innerHTML string) directly inside #flashcard-reveal, so
+// toggleFlashcardReveal's existing hide/show of that element covers this
+// too for free, and each render gets a fresh button/listener pair.
+function renderFlashcardMnemonicSection(revealEl, detail) {
+  if (flashcardCategory !== "incorrect" || !detail.lastWrongAnswer || !window.VocabAi) return;
+
+  const section = document.createElement("div");
+  section.className = "flashcard-mnemonic";
+  section.innerHTML = `
+    <div class="row actions">
+      <button type="button" class="btn secondary small flashcard-mnemonic-btn">🧠 個人化記憶法</button>
+    </div>
+    <p class="hint flashcard-mnemonic-status"></p>
+    <div class="mnemonic-note hidden flashcard-mnemonic-text"></div>
+  `;
+  revealEl.appendChild(section);
+
+  const btn = section.querySelector(".flashcard-mnemonic-btn");
+  const statusEl = section.querySelector(".flashcard-mnemonic-status");
+  const textEl = section.querySelector(".flashcard-mnemonic-text");
+
+  async function run(force) {
+    btn.disabled = true;
+    statusEl.textContent = force ? "正在重新產生…" : "正在產生個人化記憶法…";
+    const result = await window.VocabAi.requestPersonalizedMnemonic(
+      detail.word,
+      detail.pos,
+      detail.zh,
+      detail.recentWrongAnswers,
+      { force: force }
+    );
+    btn.disabled = false;
+    if (!result.ok) {
+      statusEl.textContent = result.error;
+      return;
+    }
+    statusEl.textContent = "";
+    textEl.textContent = `🧠 ${result.mnemonic}`;
+    textEl.classList.remove("hidden");
+    btn.textContent = "🔄 重新產生記憶法";
+  }
+
+  btn.addEventListener("click", () => run(true));
+
+  // Auto-shows a PREVIOUSLY cached hook immediately (no network call - see
+  // VocabAi.peekCachedMnemonic) so it doesn't disappear and need re-tapping
+  // every time this card comes back around; a word with nothing cached yet
+  // just waits for the button instead of a request firing on its own for
+  // every card as a deck is browsed (see that function's own comment on why).
+  const cached = window.VocabAi.isConfigured() ? window.VocabAi.peekCachedMnemonic(detail.word) : null;
+  if (cached) {
+    textEl.textContent = `🧠 ${cached}`;
+    textEl.classList.remove("hidden");
+    btn.textContent = "🔄 重新產生記憶法";
+  }
 }
 
 // A long English word (e.g. "telecommunications", 18 letters) has no
@@ -1927,6 +2003,7 @@ function renderFlashcard() {
   revealEl.classList.remove("hidden");
   const sectionShowWrong = showWrongInfoForCategory(flashcardCategory);
   revealEl.innerHTML = buildFlashcardRevealHtml(detail, sectionShowWrong === null ? detail.state === "incorrect" : sectionShowWrong);
+  renderFlashcardMnemonicSection(revealEl, detail);
   document.getElementById("flashcard-tap-hint").textContent = "點卡片可暫時隱藏意思";
 
   // Counts toward "測驗這些單字"'s "seen the whole deck" gate the moment a
@@ -2114,6 +2191,64 @@ function startReviewDeckTest() {
   stopRoundTimer();
   showTestWord();
 }
+
+/* ---------- Memory-palace story mode (see vocab-ai.js) ---------- */
+
+// Fixed, small batch size - "keep the request bounded" per README, not an
+// open-ended "however many are in the backlog" batch. A story that actually
+// has to weave together more than a handful of words stops being a useful
+// memory hook and starts being a list with narrative filler.
+const STORY_WORD_COUNT = 5;
+
+// Combines both backlog categories (unlike the flashcard launch panel,
+// which reviews exactly one at a time) since a memory-palace story benefits
+// from variety, then reuses Logic.selectReviewBatch's own
+// least-recently-reviewed-first selection (see that function's comment) so
+// repeated taps of "產生故事" naturally surface a different batch each time
+// instead of the same few words every session - same rotation reasoning
+// 卡片複習模式's own deck picking already relies on.
+function buildStoryWordPool(amount) {
+  const combined = wordsInCategory("incorrect").concat(wordsInCategory("learning"));
+  return Logic.selectReviewBatch(combined, progressStore, amount, Math.random);
+}
+
+async function generateMemoryPalaceStory() {
+  const btn = document.getElementById("story-generate-btn");
+  const statusEl = document.getElementById("story-status");
+  const resultEl = document.getElementById("story-result");
+
+  if (!window.VocabAi || !window.VocabAi.isConfigured()) {
+    statusEl.textContent = "記憶宮殿故事模式尚未設定，請聯絡開發者。";
+    resultEl.classList.add("hidden");
+    return;
+  }
+  const pool = buildStoryWordPool(STORY_WORD_COUNT);
+  if (pool.length < 2) {
+    statusEl.textContent = "答錯待複習／學習中的單字太少，至少需要 2 個才能產生故事。";
+    resultEl.classList.add("hidden");
+    return;
+  }
+
+  // Disabled for the duration of the request so a double-tap can't fire two
+  // overlapping story requests.
+  btn.disabled = true;
+  statusEl.textContent = "正在請 AI 編故事…";
+  resultEl.classList.add("hidden");
+
+  const words = pool.map((w) => ({ word: w.word, meaning: w.zh }));
+  const result = await window.VocabAi.requestMemoryPalaceStory(words);
+
+  btn.disabled = false;
+  if (!result.ok) {
+    statusEl.textContent = result.error;
+    return;
+  }
+  statusEl.textContent = "";
+  document.getElementById("story-words").textContent = `這則故事用到：${result.usedWords.join("、")}`;
+  document.getElementById("story-text").textContent = result.story;
+  resultEl.classList.remove("hidden");
+}
+document.getElementById("story-generate-btn").addEventListener("click", generateMemoryPalaceStory);
 
 document.getElementById("reviewlist-category-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest(".segmented-btn[data-category]");
@@ -2308,7 +2443,7 @@ const FLASHCARD_SWIPE_OUT_MS = 180;
   }
 
   el.addEventListener("pointerdown", (e) => {
-    if (e.target.closest(".flashcard-play-btn, .flashcard-mark-btn")) return; // let their own click handlers run
+    if (e.target.closest(".flashcard-play-btn, .flashcard-mark-btn, .flashcard-mnemonic-btn")) return; // let their own click handlers run
     dragging = true;
     moved = false;
     startX = e.clientX;

@@ -225,6 +225,26 @@
       </div>
     </div>
 
+    <!-- MEMORY-PALACE STORY MODE: picks a small, bounded batch of current
+         答錯待複習／學習中 單字 and asks the AI proxy (vocab-ai.js's
+         requestMemoryPalaceStory) for one short story using all of them
+         together, as a group mnemonic rather than word-by-word. Degrades to
+         a clear "尚未設定"/離線 message (see generateMemoryPalaceStory)
+         when the Worker path isn't configured or there's no network -
+         everything else in this tab keeps working either way. -->
+    <div class="card" id="story-mode-panel">
+      <h2>📖 記憶宮殿故事模式</h2>
+      <p class="hint">從目前「答錯待複習／學習中」挑幾個單字，請 AI 編一則同時用到這幾個字的短故事，一次記住一整批，而不是一個一個背。</p>
+      <div class="row actions">
+        <button type="button" class="btn primary" id="story-generate-btn">📖 產生故事</button>
+      </div>
+      <p class="hint" id="story-status"></p>
+      <div id="story-result" class="hidden">
+        <p class="hint" id="story-words"></p>
+        <div class="story-text" id="story-text"></div>
+      </div>
+    </div>
+
     <!-- LIST VIEW -->
     <div class="card" id="reviewlist-list-panel">
       <p class="hint" id="reviewlist-list-hint"></p>
@@ -394,5 +414,6 @@
 <script src="logic.js?v=__BUILD_VERSION__"></script>
 <script src="app.js?v=__BUILD_VERSION__"></script>
 <script src="sync.js?v=__BUILD_VERSION__"></script>
+<script src="vocab-ai.js?v=__BUILD_VERSION__"></script>
 </body>
 </html>

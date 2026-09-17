@@ -343,6 +343,13 @@ input[type="range"] { accent-color: var(--primary); flex: 1; max-width: 200px; m
   color: var(--muted);
 }
 
+.story-text {
+  margin-top: 10px;
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+
 .answer-diff {
   margin-top: 6px;
   font-size: 0.95rem;
@@ -905,6 +912,20 @@ input[type="range"] { accent-color: var(--primary); flex: 1; max-width: 200px; m
 .flashcard-tap-hint {
   margin: 2px 0 0 0;
   font-size: 0.75rem;
+}
+
+/* Personalized mnemonic (see vocab-ai.js) and pre-generated example sentence
+   (see data/ai_signals.json's exampleSentence), both shown inside the same
+   #flashcard-reveal element they're appended to, so toggleFlashcardReveal's
+   hide/show applies to them automatically. */
+.flashcard-mnemonic {
+  margin-top: 10px;
+}
+.flashcard-example {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  font-style: italic;
+  color: var(--muted);
 }
 
 .flashcard-nav {

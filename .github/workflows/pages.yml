@@ -37,6 +37,14 @@ jobs:
         # same fallback shape as Orbit's own VITE_ORBIT_SYNC_PROXY_URL.
         run: |
           sed -i "s|__VOCAB_SYNC_PROXY_URL__|${{ vars.VOCAB_SYNC_PROXY_URL }}|g" sync.js
+      - name: Stamp AI features (personalized mnemonic / story mode) proxy URL
+        # Same reasoning as the sync proxy URL above - VOCAB_AI_PROXY_URL is
+        # a plain repository Variable, not a Secret (it ends up in this
+        # public static bundle either way, see vocab-ai.js), and left unset
+        # substitutes the empty string, which vocab-ai.js's own
+        # isVocabAiConfigured() correctly reads as "not configured".
+        run: |
+          sed -i "s|__VOCAB_AI_PROXY_URL__|${{ vars.VOCAB_AI_PROXY_URL }}|g" vocab-ai.js
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
